@@ -15,12 +15,10 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
 # ================== CONFIG (ENV VARIABLES) ==================
-# Render ke Environment tab me ye variables add karein: BOT_TOKEN, OWNER_ID_1, OWNER_ID_2
 BOT_TOKEN = os.getenv("BOT_TOKEN", "9259442048:AAEZd8_NvInXdUlPw3YHuSck-Cmo0Ofi7Gc")
 API_ID = int(os.getenv("API_ID", "38746329"))
 API_HASH = os.getenv("API_HASH", "dc6d3dd0de462ed07952a64c3253c437")
 
-# Owner IDs ko env se uthayenge, agar nahi mila to default use hoga
 owner1_str = os.getenv("OWNER_ID_1", "7729056358")
 owner2_str = os.getenv("OWNER_ID_2", "8808192812")
 
@@ -68,7 +66,6 @@ def init_db():
     except sqlite3.OperationalError:
         pass 
 
-    # Aapki file ka data inject kar raha hun
     for owner in BASE_OWNERS:
         c.execute("INSERT OR IGNORE INTO owners (user_id) VALUES (?)", (owner,))
         
@@ -560,7 +557,7 @@ async def get_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask_add_mail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in get_all_owners():
         return ConversationHandler.END
-    await update.message.reply_text("Send the fake email address to save:")
+    await update.message.reply_text("Send the fake email address to save (or /cancel to cancel):")
     return ASK_SAVE_MAIL
 
 async def save_mail(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -572,10 +569,31 @@ async def save_mail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("This email is already in the saved list.")
     return ConversationHandler.END
 
+async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Action canceled.")
+    return ConversationHandler.END
+
+async def del_mail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in get_all_owners():
+        return
+    
+    args = context.args
+    if not args:
+        return await update.message.reply_text("Usage: `/delmail email@domain.com`", parse_mode="Markdown")
+    
+    email_to_del = args[0]
+    res = db_exec("SELECT id FROM saved_mails WHERE email_address=?", (email_to_del,))
+    
+    if not res:
+        return await update.message.reply_text("This mail is not in the pool.")
+        
+    db_exec("DELETE FROM saved_mails WHERE email_address=?", (email_to_del,))
+    await update.message.reply_text(f"✅ Email {email_to_del} deleted from pool.")
+
 async def set_group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in get_all_owners():
         return ConversationHandler.END
-    await update.message.reply_text("Send the group link/username:")
+    await update.message.reply_text("Send the group link/username (or /cancel to cancel):")
     return ASK_GROUP_LINK
 
 async def save_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -651,7 +669,7 @@ async def bannedlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask_add_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in get_all_owners():
         return ConversationHandler.END
-    await update.message.reply_text("Send the User ID of the person you want to make an Owner:")
+    await update.message.reply_text("Send the User ID of the person you want to make an Owner (or /cancel to cancel):")
     return ASK_ADD_OWNER
 
 async def save_new_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -688,6 +706,7 @@ async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👑 **Owner Commands:**\n"
         "/owner - View mail pool and group\n"
         "/addmail - Add new mail to pool\n"
+        "/delmail - Delete a mail from pool\n"
         "/setgroup - Set target group for forwarding\n"
         "/users - View all users and their mail counts\n"
         "/ban user_id - Ban a user\n"
@@ -727,6 +746,7 @@ def main():
     
     app_bot = Application.builder().token(BOT_TOKEN).build()
 
+    # Login Conversation
     login_conv = ConversationHandler(
         entry_points=[CommandHandler("phone", add_acc_start)],
         states={
@@ -734,25 +754,28 @@ def main():
             ASK_OTP:   [MessageHandler(filters.TEXT & ~filters.COMMAND, get_otp)],
             ASK_2FA:   [MessageHandler(filters.TEXT & ~filters.COMMAND, get_2fa)],
         },
-        fallbacks=[],
+        fallbacks=[CommandHandler("cancel", cancel_conv)],
     )
 
+    # Add Mail Conversation
     mail_conv = ConversationHandler(
         entry_points=[CommandHandler("addmail", ask_add_mail)],
         states={ASK_SAVE_MAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_mail)]},
-        fallbacks=[],
+        fallbacks=[CommandHandler("cancel", cancel_conv), CommandHandler("start", start)], # <--- Start add kiya taki atke nahi
     )
 
+    # Set Group Conversation
     group_conv = ConversationHandler(
         entry_points=[CommandHandler("setgroup", set_group_cmd)],
         states={ASK_GROUP_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_group)]},
-        fallbacks=[],
+        fallbacks=[CommandHandler("cancel", cancel_conv)],
     )
     
+    # Add Owner Conversation
     owner_conv = ConversationHandler(
         entry_points=[CommandHandler("addowner", ask_add_owner)],
         states={ASK_ADD_OWNER: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_new_owner)]},
-        fallbacks=[],
+        fallbacks=[CommandHandler("cancel", cancel_conv)],
     )
 
     # Commands
@@ -771,6 +794,7 @@ def main():
     app_bot.add_handler(CommandHandler("ban", ban_cmd))
     app_bot.add_handler(CommandHandler("unban", unban_cmd))
     app_bot.add_handler(CommandHandler("bannedlist", bannedlist_cmd))
+    app_bot.add_handler(CommandHandler("delmail", del_mail_cmd)) # <--- Del Mail add kiya
     app_bot.add_handler(CommandHandler("removeowner", remove_owner_cmd))
     app_bot.add_handler(CommandHandler("commands", commands_cmd))
     
